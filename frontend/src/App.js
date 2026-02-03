@@ -35,6 +35,20 @@ function App() {
   
   const [loading, setLoading] = useState(false);
 
+  // 중복 제거 헬퍼 함수
+  const removeDuplicateAnimes = (animes) => {
+    if (!Array.isArray(animes)) return [];
+    
+    const uniqueMap = new Map();
+    animes.forEach(anime => {
+      const id = anime.anime_id || anime.mal_id;
+      if (id && !uniqueMap.has(id)) {
+        uniqueMap.set(id, anime);
+      }
+    });
+    return Array.from(uniqueMap.values());
+  };
+
   useEffect(() => {
     const token = localStorage.getItem('token');
     if (token) {
@@ -50,28 +64,61 @@ function App() {
       const response = await animeApi.getMyInfo();
       setUserEmail(response.data.email);
     } catch (error) {
-      console.error('사용자 정보 로드 실패');
+      console.error('사용자 정보 로드 실패', error);
+      if (error.response?.status === 401) {
+        handleLogout();
+      }
     }
   };
 
   const loadPopularAnimes = async () => {
     try {
       const response = await animeApi.getPopularAnimes();
-      setPopularAnimes(response.data);
+      const uniqueAnimes = removeDuplicateAnimes(response.data);
+      setPopularAnimes(uniqueAnimes);
+      console.log('🎬 인기 애니 로드:', uniqueAnimes.length, '개');
     } catch (error) {
-      console.error('인기 애니 로드 실패');
+      console.error('인기 애니 로드 실패', error);
     }
   };
 
   const loadMyData = async () => {
     try {
       const favs = await animeApi.getFavorites();
-      setMyFavorites(favs.data);
+      const uniqueFavs = removeDuplicateAnimes(favs.data);
+      setMyFavorites(uniqueFavs);
+      console.log('📋 즐겨찾기 목록 로드:', uniqueFavs.length, '개');
       
-      const recs = await animeApi.getPersonalRecommendations();
-      setRecommendations(recs.data);
+      // 즐겨찾기가 있을 때만 추천 가져오기
+      if (uniqueFavs.length > 0) {
+        try {
+          const recs = await animeApi.getPersonalRecommendations();
+          const uniqueRecs = removeDuplicateAnimes(recs.data.recommendations || []);
+          setRecommendations(uniqueRecs);
+          console.log('💡 추천 목록 로드:', uniqueRecs.length, '개');
+        } catch (recError) {
+          // 404는 정상 (즐겨찾기가 없으면 추천도 없음)
+          if (recError.response?.status !== 404) {
+            console.error('추천 로드 실패', recError);
+          }
+          setRecommendations([]);
+        }
+      } else {
+        setRecommendations([]);
+      }
     } catch (error) {
-      console.error('데이터 로드 실패');
+      // 404는 무시 (즐겨찾기 없음)
+      if (error.response?.status === 404) {
+        setMyFavorites([]);
+        setRecommendations([]);
+        return;
+      }
+      
+      console.error('데이터 로드 실패', error);
+      
+      if (error.response?.status === 401) {
+        handleLogout();
+      }
     }
   };
 
@@ -80,10 +127,12 @@ function App() {
     setLoading(true);
     try {
       const response = await animeApi.searchAnime(keyword);
-      setSearchResults(response.data);
+      const uniqueResults = removeDuplicateAnimes(response.data);
+      setSearchResults(uniqueResults);
       setCurrentPage('search');
+      console.log('🔍 검색 결과:', uniqueResults.length, '개');
     } catch (error) {
-      console.error('검색 실패');
+      console.error('검색 실패', error);
     }
     setLoading(false);
   };
@@ -93,8 +142,8 @@ function App() {
       await animeApi.login(email, password);
       setIsLoggedIn(true);
       setShowLoginModal(false);
-      loadUserInfo();
-      loadMyData();
+      await loadUserInfo();
+      await loadMyData();
     } catch (error) {
       throw new Error('로그인에 실패했습니다');
     }
@@ -124,24 +173,52 @@ function App() {
       return;
     }
 
+    const animeId = anime.anime_id || anime.mal_id;
+    
+    console.log('➕ 즐겨찾기 추가 시도:', {
+      anime_id: animeId,
+      title: anime.title,
+      image_url: anime.image_url || anime.images?.jpg?.image_url,
+      원본객체: anime
+    });
+
     try {
       await animeApi.addFavorite(
-        anime.anime_id || anime.mal_id,
+        animeId,
         anime.title,
         anime.image_url || anime.images?.jpg?.image_url
       );
-      loadMyData();
+      await loadMyData();
+      console.log('✅ 즐겨찾기 추가 성공');
     } catch (error) {
-      console.error('즐겨찾기 추가 실패');
+      console.error('❌ 즐겨찾기 추가 실패', error);
+      console.error('에러 상세:', error.response?.data);
+      
+      if (error.response?.status === 401) {
+        handleLogout();
+        setShowLoginModal(true);
+      } else {
+        alert(`추가 실패: ${error.response?.data?.detail || '알 수 없는 오류'}`);
+      }
     }
   };
 
   const handleRemoveFavorite = async (animeId) => {
+    console.log('🗑️ 즐겨찾기 삭제 시도 anime_id:', animeId);
+    console.log('📋 현재 즐겨찾기 목록:', myFavorites);
+    
+    // 즐겨찾기 목록에서 해당 anime_id 찾기
+    const targetFavorite = myFavorites.find(fav => fav.anime_id === animeId);
+    console.log('🎯 삭제 대상:', targetFavorite);
+    
     try {
       await animeApi.removeFavorite(animeId);
-      loadMyData();
+      await loadMyData();
+      console.log('✅ 즐겨찾기 삭제 성공');
     } catch (error) {
-      console.error('즐겨찾기 삭제 실패');
+      console.error('❌ 즐겨찾기 삭제 실패', error);
+      console.error('에러 상세:', error.response?.data);
+      alert(`삭제 실패: ${error.response?.data?.detail || '알 수 없는 오류'}`);
     }
   };
 
@@ -149,10 +226,12 @@ function App() {
     setLoading(true);
     try {
       const response = await animeApi.getRecommendations(title);
-      setRecommendations(response.data);
+      const uniqueRecs = removeDuplicateAnimes(response.data.recommendations || []);
+      setRecommendations(uniqueRecs);
       setCurrentPage('recommendations');
+      console.log('🎯 타이틀 기반 추천:', uniqueRecs.length, '개');
     } catch (error) {
-      console.error('추천 받기 실패');
+      console.error('추천 받기 실패', error);
     }
     setLoading(false);
   };
@@ -231,8 +310,8 @@ function App() {
                 <p className="section-subtitle">전체 {popularAnimes.length}개</p>
               </div>
               <div className="anime-grid">
-                {popularAnimes.map((anime) => (
-                  <div key={anime.anime_id}>
+                {popularAnimes.map((anime, index) => (
+                  <div key={`popular-${anime.anime_id}-${index}`}>
                     {/* AnimeCard 사용 */}
                   </div>
                 ))}
@@ -251,7 +330,11 @@ function App() {
               </div>
               {myFavorites.length > 0 ? (
                 <div className="anime-grid">
-                  {/* Render favorites */}
+                  {myFavorites.map((favorite, index) => (
+                    <div key={`favorite-${favorite.anime_id}-${index}`}>
+                      {/* AnimeCard 사용 */}
+                    </div>
+                  ))}
                 </div>
               ) : (
                 <div className="empty-state">
